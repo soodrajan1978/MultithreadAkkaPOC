@@ -1,1 +1,1056 @@
 https://app.mural.co/t/zulucloudnative0242/m/zulucloudnative0242/1628602400193/414364535d2cd5fd8b709c68e8b43ea216ae4539?sender=u1a9820af2af01e9a965b3322
+
+package com.delta.acs.snapp.api.ssr.service.impl.specialservices;
+
+import java.lang.reflect.InvocationTargetException;
+import java.sql.Timestamp;
+import java.text.DateFormat;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+import org.springframework.beans.BeanUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import com.delta.acs.snapp.annotation.aspect.LogAfterReturn;
+import com.delta.acs.snapp.annotation.aspect.LogBefore;
+import com.delta.acs.snapp.api.constants.CommonConstants;
+import com.delta.acs.snapp.api.constants.DateTimeConstants;
+import com.delta.acs.snapp.api.constants.LoggerMsgConstants;
+import com.delta.acs.snapp.api.constants.NumberConstants;
+import com.delta.acs.snapp.api.constants.PNRConstants;
+import com.delta.acs.snapp.api.constants.SSRConstants;
+import com.delta.acs.snapp.api.exception.BadRequestException;
+import com.delta.acs.snapp.api.exception.SNAPPServiceException;
+import com.delta.acs.snapp.api.exception.ServiceException;
+import com.delta.acs.snapp.api.model.ui.request.pnr.RetrievePNRRequestModel;
+import com.delta.acs.snapp.api.model.ui.response.pnr.PNRModel;
+import com.delta.acs.snapp.api.model.ui.response.pnr.SSRModel;
+import com.delta.acs.snapp.api.service.constants.SOAMethodsContants;
+import com.delta.acs.snapp.api.service.facade.RetrievePnrFacade;
+import com.delta.acs.snapp.api.service.handler.pnr.APISSRResponseBuilder;
+import com.delta.acs.snapp.api.service.interfaces.PNRService;
+import com.delta.acs.snapp.api.ssr.advise.TriggerAudits;
+import com.delta.acs.snapp.api.ssr.builder.SOASSRRequestBuilder;
+import com.delta.acs.snapp.api.ssr.model.CustomerModel;
+import com.delta.acs.snapp.api.ssr.model.CustomerNameNumber;
+import com.delta.acs.snapp.api.ssr.model.SSRRequest;
+import com.delta.acs.snapp.api.ssr.model.SsrResponseModel;
+import com.delta.acs.snapp.api.ssr.service.impl.BaseServiceImpl;
+import com.delta.acs.snapp.api.ssr.service.interfaces.specialservices.SSRService;
+import com.delta.acs.snapp.api.utilities.CommonUtils;
+import com.delta.acs.snapp.api.utilities.common.MetricsUtil;
+import com.delta.acs.snapp.common.util.MetricsLoggingUtils;
+import com.delta.acs.snapp.core.constants.components.CommonEnum;
+import com.delta.acs.snapp.core.data.common.pnr.PnrTypeVO;
+import com.delta.acs.snapp.core.data.common.pnr.SpecialServiceRequestVO;
+import com.delta.acs.snapp.core.data.common.requestinfo.RequestInfoTypeVO;
+import com.delta.acs.snapp.core.data.common.userbean.UserBean;
+import com.delta.acs.snapp.core.data.params.local.mlogging.LobbyAgentTransactionMasterVO;
+import com.delta.acs.snapp.core.data.params.local.mlogging.LobbyPnrCustTransactionVO;
+import com.delta.acs.snapp.core.data.params.local.mlogging.LobbyPnrCustomerSsrTransactionVO;
+import com.delta.acs.snapp.core.data.params.local.mlogging.LobbyPnrVO;
+import com.delta.acs.snapp.core.data.params.local.pnrcommon.RetrieveResponseType;
+import com.delta.acs.snapp.core.data.params.local.pnrdetails.EndPNRResponseType;
+import com.delta.acs.snapp.core.data.params.local.ssrinfo.AddRequestTypeVO;
+import com.delta.acs.snapp.core.data.params.local.ssrinfo.DelSSRInfoRequestV4Type;
+import com.delta.acs.snapp.core.data.params.local.ssrinfo.NameNumberInfoType;
+import com.delta.acs.snapp.core.data.params.local.ssrinfo.SpecialServiceRequestInfoTypeVO;
+import com.delta.acs.snapp.core.data.params.remarks.AddOSIRemarkRequestType;
+import com.delta.acs.snapp.core.data.params.remarks.RemarkInfoVO;
+import com.delta.acs.snapp.core.data.params.specialservicerequestv4.AddSpecialServiceResponseType;
+import com.delta.acs.snapp.core.data.params.specialservicerequestv4.DeleteResponseType;
+import com.delta.acs.snapp.core.utils.GatesUtil;
+import com.delta.acs.snapp.exception.EntityNotFoundException;
+import com.delta.acs.snapp.logger.LogUtil;
+import com.delta.acs.snapp.resourceclient.client.SNAPPResourcesClient;
+import com.delta.acs.snapp.service.transaction.SOAManager;
+import com.delta.acs.snapp.services.common.logger.SnappLogger;
+import com.delta.acs.snapp.soa.core.interfaces.A_RemarkService;
+import com.delta.acs.snapp.soa.core.interfaces.A_SSRRequestV4Service;
+import com.delta.acs.snapp.soa.core.interfaces.provider.InterfaceProvider;
+import com.delta.acs.snapp.soa.core.transformer.DataTransformer;
+
+/**
+ * SSR Service Impl class
+ */
+@Service
+public class SSRServiceImpl extends BaseServiceImpl implements SSRService {
+
+	@Autowired
+	private SOAManager soaManager;
+
+	@Autowired
+	private RetrievePnrFacade retrievePnrFacade;
+
+	@Autowired
+	private SNAPPResourcesClient snappResourcesClient;
+
+	@Autowired
+	private MetricsUtil metricsUtil;
+
+	@Autowired
+	private PNRService pnrService;
+
+	private static final String INVALID_CUSTOMERID_ERROR_MSG = "Customer Id is not valid";
+
+	private static final String VERIFIED = " VERIFIED";
+
+	private static final String SVAN = "SVAN";
+
+	private static final List<String> SERVICEANIMALBASEDSSRS = Arrays.asList("BLND", "DEAF");
+
+	private static final List<String> OSIREMARKSBASEDSSRS = Arrays.asList("ESAN", "SVAN");
+
+	private static final String SVAN_OTHER = "OTHER";
+
+	private static final String SSR_DELIMITER = "///";
+
+	@LogBefore
+	@LogAfterReturn
+	@Override
+	public AddSpecialServiceResponseType invokeSSRSOACall(AddRequestTypeVO addRequestTypeVO)
+			throws SNAPPServiceException {
+		AddSpecialServiceResponseType soaAddResponse = null;
+		try {
+			if (CommonUtils.isValidList(addRequestTypeVO.getSpecialServiceRequestInfo().getSegmentNumberInfo())
+					|| CommonConstants.YES_IND
+							.equalsIgnoreCase(addRequestTypeVO.getSpecialServiceRequestInfo().getAllSegmentsFlag())) {
+
+				A_SSRRequestV4Service ssrRequestV4Service = InterfaceProvider.getSSRRequestV4Interface();
+
+				com.delta.schemas.common.specialservicerequesttypes.v4.AddRequestType soaAddRequest = (com.delta.schemas.common.specialservicerequesttypes.v4.AddRequestType) DataTransformer
+						.transform(addRequestTypeVO,
+								com.delta.schemas.common.specialservicerequesttypes.v4.AddRequestType.class);
+
+				soaAddResponse = (AddSpecialServiceResponseType) soaManager.invokeSOACall(ssrRequestV4Service,
+						SOAMethodsContants.ADD_SSR, soaAddRequest, new UserBean());
+			}
+		} catch (InvocationTargetException exception) {
+			SnappLogger.logError(LogUtil.getLogExceptionDetails(transactionModel.getHeaderInfoModel(), exception));
+			Map<String, String> exceptionMap = CommonUtils.getExceptionDetails(exception);
+			throw new SNAPPServiceException(exceptionMap.get(LoggerMsgConstants.ERR_CODE),
+					exceptionMap.get(LoggerMsgConstants.ERR_MSG), null);
+		} catch (Exception exception) {
+			SnappLogger.logError(LogUtil.getLogExceptionDetails(transactionModel.getHeaderInfoModel(), exception));
+			throw new SNAPPServiceException(null, exception.getMessage(), null);
+		}
+		return soaAddResponse;
+	}
+
+	@TriggerAudits
+	@Override
+	public SsrResponseModel modifyGenericSSR(SSRRequest modifySSRRequest)
+			throws SNAPPServiceException, BadRequestException, EntityNotFoundException {
+		PNRModel pnrModel;
+		SsrResponseModel ssrResponseModel = new SsrResponseModel();
+		MetricsLoggingUtils metricsLoggingUtils = new MetricsLoggingUtils();
+		String beginTimeStamp = new Timestamp(System.currentTimeMillis()).toString();
+		LobbyAgentTransactionMasterVO lobbyAgentTransactionMasterVO = null;
+		boolean statusCode = false;
+
+		try {
+			pnrModel = retrievePnr(modifySSRRequest.getRecordLocator(), CommonConstants.MODIFY_SSR_TXN_TYPE);
+			initializeAuditContext(pnrModel);
+			deleteSSRAndOSIRemark(modifySSRRequest, pnrModel, true, true);
+			if (SERVICEANIMALBASEDSSRS.contains(modifySSRRequest.getRequestCode())) {
+				boolean deleteSpecific = modifySSRRequest.getServiceAnimalRequired();
+				cloneRequestForSVANAndDelete(modifySSRRequest, pnrModel, deleteSpecific, !deleteSpecific);
+			}
+			frameAndSoaCallForAddSSR(modifySSRRequest, pnrModel, true);
+			EndPNRResponseType endPNRResponse = pnrService.endPNR();
+			ssrResponseModel = buildSSRResponseModel(pnrModel, endPNRResponse.getPnr());
+			lobbyAgentTransactionMasterVO = constructLobbyAgentVO(beginTimeStamp, pnrModel, endPNRResponse,
+					modifySSRRequest, false, true);
+			statusCode = true;
+		} catch (RuntimeException exception) {
+			SnappLogger.logError(LogUtil.getLogExceptionDetails(transactionModel.getHeaderInfoModel(), exception));
+			lobbyAgentTransactionMasterVO = new LobbyAgentTransactionMasterVO();
+			lobbyAgentTransactionMasterVO = metricsUtil.constructLobbyAgentTransaction(beginTimeStamp, transactionModel,
+					snappResourcesClient);
+			lobbyAgentTransactionMasterVO.setAgentTransactionStatusCode(PNRConstants.FAILURE);
+			lobbyAgentTransactionMasterVO.setAgentTransactionErrorText(exception.getMessage());
+		} finally {
+			try {
+				if (null != lobbyAgentTransactionMasterVO) {
+					metricsLoggingUtils.openLobbyLog(metricsUtil.getLobbyLogingQueue(), lobbyAgentTransactionMasterVO,
+							statusCode);
+				}
+			} catch (RuntimeException exception) {
+				SnappLogger.logError(LogUtil.getLogExceptionDetails(transactionModel.getHeaderInfoModel(), exception));
+			}
+		}
+		return ssrResponseModel;
+	}
+
+	@Override
+	public DeleteResponseType invokeDeleteSSRSOACall(DelSSRInfoRequestV4Type deleteRequestVO)
+			throws SNAPPServiceException {
+		DeleteResponseType soaDeleteResponse = null;
+		try {
+			if (deleteRequestVO != null) {
+				A_SSRRequestV4Service ssrRequestV4Service = InterfaceProvider.getSSRRequestV4Interface();
+
+				com.delta.acs.snapp.core.data.params.specialservicerequestv4.DeleteRequestType soaDeleteRequest = 
+						(com.delta.acs.snapp.core.data.params.specialservicerequestv4.DeleteRequestType) DataTransformer
+						.transform(deleteRequestVO,
+								com.delta.acs.snapp.core.data.params.specialservicerequestv4.DeleteRequestType.class);
+				soaDeleteResponse = (DeleteResponseType) soaManager.invokeSOACall(ssrRequestV4Service,
+						SOAMethodsContants.DELETE_SSR, soaDeleteRequest, new UserBean());
+			}
+		} catch (InvocationTargetException exception) {
+			SnappLogger.logError(LogUtil.getLogExceptionDetails(transactionModel.getHeaderInfoModel(), exception));
+			Map<String, String> exceptionMap = CommonUtils.getExceptionDetails(exception);
+			throw new SNAPPServiceException(exceptionMap.get(LoggerMsgConstants.ERR_CODE),
+					exceptionMap.get(LoggerMsgConstants.ERR_MSG), null);
+		} catch (Exception exception) {
+			SnappLogger.logError(LogUtil.getLogExceptionDetails(transactionModel.getHeaderInfoModel(), exception));
+			throw new SNAPPServiceException(null, exception.getMessage(), null);
+		}
+		return soaDeleteResponse;
+	}
+
+	@LogBefore
+	@LogAfterReturn
+	@TriggerAudits
+	@Override
+	public SsrResponseModel deleteGenericSSR(SSRRequest ssrRequest)
+			throws SNAPPServiceException, EntityNotFoundException, BadRequestException {
+		PNRModel pnrModel = null;
+		SsrResponseModel ssrResponseModel = new SsrResponseModel();
+		LobbyAgentTransactionMasterVO lobbyAgentTransactionMasterVO = null;
+		MetricsLoggingUtils metricsLoggingUtils = new MetricsLoggingUtils();
+		String beginTimeStamp = new Timestamp(System.currentTimeMillis()).toString();
+		try {
+			pnrModel = retrievePnr(ssrRequest.getRecordLocator(), CommonConstants.DELETE_SSR_TXN_TYPE);
+			initializeAuditContext(pnrModel);
+			deleteSSRAndOSIRemark(ssrRequest, pnrModel, false, true);
+			if (SERVICEANIMALBASEDSSRS.contains(ssrRequest.getRequestCode())
+					&& !ssrRequest.getServiceAnimalRequired()) {
+				cloneRequestForSVANAndDelete(ssrRequest, pnrModel, false, true);
+			}
+			EndPNRResponseType endPNRResponse = pnrService.endPNR();
+			ssrResponseModel = buildSSRResponseModel(pnrModel, endPNRResponse.getPnr());
+			lobbyAgentTransactionMasterVO = constructLobbyAgentVO(beginTimeStamp, pnrModel, endPNRResponse, ssrRequest,
+					false, false);
+		} catch (RuntimeException exception) {
+			SnappLogger.logError(LogUtil.getLogExceptionDetails(transactionModel.getHeaderInfoModel(), exception));
+			lobbyAgentTransactionMasterVO = new LobbyAgentTransactionMasterVO();
+			lobbyAgentTransactionMasterVO = metricsUtil.constructLobbyAgentTransaction(beginTimeStamp, transactionModel,
+					snappResourcesClient);
+			lobbyAgentTransactionMasterVO.setAgentTransactionStatusCode(PNRConstants.FAILURE);
+			lobbyAgentTransactionMasterVO.setAgentTransactionErrorText(exception.getMessage());
+		} finally {
+			try {
+				if (null != lobbyAgentTransactionMasterVO) {
+					metricsLoggingUtils.openLobbyLog(metricsUtil.getLobbyLogingQueue(), lobbyAgentTransactionMasterVO,
+							false);
+				}
+			} catch (RuntimeException exception) {
+				SnappLogger.logError(LogUtil.getLogExceptionDetails(transactionModel.getHeaderInfoModel(), exception));
+			}
+		}
+
+		return ssrResponseModel;
+	}
+
+	private void cloneRequestForSVANAndDelete(SSRRequest theSSRRequest, PNRModel pnrModel, boolean modifySSR,
+			boolean allSegmentFlag) throws BadRequestException, SNAPPServiceException {
+
+		SSRRequest svanDeleteRequest = new SSRRequest();
+		BeanUtils.copyProperties(theSSRRequest, svanDeleteRequest);
+		svanDeleteRequest.setRequestCode(SSRConstants.SERVICE_ANIMAL_SSR_CODE);
+		if (allSegmentFlag) {
+			svanDeleteRequest.setAllSegmentIndicator(allSegmentFlag);
+			svanDeleteRequest.setSegmentList(null);
+		}
+		deleteSSRAndOSIRemark(svanDeleteRequest, pnrModel, modifySSR, false);
+	}
+
+	@LogBefore
+	@LogAfterReturn
+	@TriggerAudits
+	@Override
+	public SsrResponseModel addGenericSSR(SSRRequest ssrRequestModel)
+			throws EntityNotFoundException, SNAPPServiceException, BadRequestException {
+
+		SsrResponseModel ssrResponseModel = new SsrResponseModel();
+		LobbyAgentTransactionMasterVO lobbyAgentTransactionMasterVO = null;
+		MetricsLoggingUtils metricsLoggingUtils = new MetricsLoggingUtils();
+		String beginTimeStamp = new Timestamp(System.currentTimeMillis()).toString();
+		try {
+			PNRModel pnrModel = retrievePnr(ssrRequestModel.getRecordLocator(), CommonConstants.ADD_SSR_TXN_TYPE);
+			initializeAuditContext(pnrModel);
+			frameAndSoaCallForAddSSR(ssrRequestModel, pnrModel, false);
+			EndPNRResponseType endPNRResponse = pnrService.endPNR();
+			ssrResponseModel = buildSSRResponseModel(pnrModel, endPNRResponse.getPnr());
+			lobbyAgentTransactionMasterVO = constructLobbyAgentVO(beginTimeStamp, pnrModel, endPNRResponse,
+					ssrRequestModel, true, false);
+		} catch (BadRequestException badRequestException) {
+			throw new BadRequestException(null, INVALID_CUSTOMERID_ERROR_MSG, null);
+		} catch (RuntimeException exception) {
+			SnappLogger.logError(LogUtil.getLogExceptionDetails(transactionModel.getHeaderInfoModel(), exception));
+			lobbyAgentTransactionMasterVO = new LobbyAgentTransactionMasterVO();
+			lobbyAgentTransactionMasterVO = metricsUtil.constructLobbyAgentTransaction(beginTimeStamp, transactionModel,
+					snappResourcesClient);
+			lobbyAgentTransactionMasterVO.setAgentTransactionStatusCode(PNRConstants.FAILURE);
+			lobbyAgentTransactionMasterVO.setAgentTransactionErrorText(exception.getMessage());
+		} finally {
+			try {
+				if (null != lobbyAgentTransactionMasterVO) {
+					metricsLoggingUtils.openLobbyLog(metricsUtil.getLobbyLogingQueue(), lobbyAgentTransactionMasterVO,
+							false);
+				}
+			} catch (RuntimeException exception) {
+				SnappLogger.logError(LogUtil.getLogExceptionDetails(transactionModel.getHeaderInfoModel(), exception));
+			}
+		}
+
+		return ssrResponseModel;
+	}
+
+	@Override
+	public PNRModel retrievePnr(String recordLocator, String transactionType) throws EntityNotFoundException {
+		PNRModel pnrModel;
+		RetrievePNRRequestModel retrievePNRRequestModel = new RetrievePNRRequestModel();
+		String location = transactionModel.getClientContextModel().getWorkstationLocation();
+		retrievePNRRequestModel.setMachineLocation(location);
+		retrievePNRRequestModel.setRecordLocator(recordLocator);
+		retrievePNRRequestModel.setSkipAudits(true);
+		retrievePNRRequestModel.setBasicPNRCall(true);
+		transactionModel.setTransactionType(transactionType);
+		retrievePNRRequestModel.setUTBTransaction(true);
+		pnrModel = retrievePnrFacade.retrievePNR(retrievePNRRequestModel);
+		if (pnrModel == null) {
+			throw new EntityNotFoundException("", "", recordLocator + " is not a valid PNR");
+		}
+		return pnrModel;
+	}
+
+	@TriggerAudits
+	@Override
+	public SsrResponseModel addCUBASsr(Map<String, String> ssrMap, SSRRequest ssrRequest,
+			RetrieveResponseType retrieveResponse) throws ServiceException {
+		EndPNRResponseType endPNRResponse;
+		PNRModel pnrModel;
+		SsrResponseModel ssrResponseModel = new SsrResponseModel();
+		ssrResponseModel.setSsrs(new ArrayList<>());
+		String ssrType;
+		try {
+			pnrModel = retrievePnr(ssrRequest.getRecordLocator(), CommonConstants.ADD_SSR_TXN_TYPE);
+			initializeAuditContext(pnrModel);
+			AddRequestTypeVO addRequestType;
+			SsrResponseModel delSSRresponse = null;
+			for (CustomerNameNumber customerNameNumber : ssrRequest.getCustomerNameNumbers()) {
+
+				infantCheck(ssrRequest, isInfant(customerNameNumber, pnrModel));
+				ssrType = ssrRequest.getRequestCode();
+				addRequestType = SOASSRRequestBuilder.frameAddSSRRequest(ssrRequest, ssrRequest.getRequestCode(),
+						pnrModel);
+				addRequestType.setRequestInfo(soaManager.getRequestTypeInfo(new RequestInfoTypeVO()));
+				addRequestType.getSpecialServiceRequestInfo().setNameNumberInfo(frameCustomer(customerNameNumber));
+
+				if (CommonUtils.isStringEqualsIgnoreCase(SSRConstants.TCCD_SSR_CODE, ssrType)
+						|| CommonUtils.isStringEqualsIgnoreCase(SSRConstants.TCDI_SSR_CODE, ssrType)) {
+					String remarkTxt = getFreeFormTextForTCCD();
+					addRequestType.getSpecialServiceRequestInfo().setFreeformText(remarkTxt);
+				}
+
+				delSSRresponse = addOrDeleteSSR(ssrMap, ssrType, addRequestType);
+			}
+			if (delSSRresponse != null) {
+				endPNRResponse = pnrService.endPNR();
+				APISSRResponseBuilder.populateSsrFromEndResponse(pnrModel, endPNRResponse);
+				ssrResponseModel.setSsrs(transformToLocalPNRModel(pnrModel).getSpecialServiceRequests());
+			}
+		} catch (EntityNotFoundException | BadRequestException exception) {
+			SnappLogger.logError(LogUtil.getLogExceptionDetails(transactionModel.getHeaderInfoModel(), exception));
+			Map<String, String> exceptionMap = com.delta.acs.snapp.api.service.worker.v2.common.CommonUtils
+					.getExceptionDetails(exception);
+			throw new ServiceException(exceptionMap.get(LoggerMsgConstants.ERR_CODE),
+					exceptionMap.get(LoggerMsgConstants.ERR_MSG));
+		} catch (SNAPPServiceException exception) {
+			SnappLogger.logError(LogUtil.getLogExceptionDetails(transactionModel.getHeaderInfoModel(), exception));
+			throw new ServiceException("500", exception.getErrorMessage());
+		}
+
+		return ssrResponseModel;
+	}
+
+	private LobbyAgentTransactionMasterVO constructLobbyAgentVO(String beginTimestamp, PNRModel pnrModel,
+			EndPNRResponseType endPNRResponseType, SSRRequest ssrRequest, boolean addSSR, boolean modifySSR) {
+		String bookingDate = "";
+		String firstNameNumber = "";
+		String lastNameNumber = "";
+		String workstationId = "";
+		String ssrRequestCode = "";
+		ArrayList<LobbyPnrCustTransactionVO> lobbyPnrCustTransaction = new ArrayList<>();
+		if (CommonUtils.isValidString(transactionModel.getClientContextModel().getWorkstationId())) {
+			workstationId = transactionModel.getClientContextModel().getWorkstationId();
+		}
+		if (CommonUtils.isValidString(ssrRequest.getRequestCode())) {
+			ssrRequestCode = ssrRequest.getRequestCode();
+		}
+
+		LobbyPnrCustomerSsrTransactionVO lobbyPnrCustomerSsrTransactionVO = null;
+		LobbyPnrVO lobbyPnrVO = null;
+
+		if (ssrRequest.getCustomerNameNumbers() != null) {
+			CustomerNameNumber customerNameNumber = ssrRequest.getCustomerNameNumbers().get(0);
+			firstNameNumber = customerNameNumber.getFirstNameNumber();
+			lastNameNumber = customerNameNumber.getLastNameNumber();
+			bookingDate = metricsUtil.getBookingDate(pnrModel, firstNameNumber, lastNameNumber, transactionModel);
+		}
+
+		// AGT_TRANS
+		LobbyAgentTransactionMasterVO lobbyAgentTransactionMasterVO = metricsUtil
+				.constructLobbyAgentTransaction(beginTimestamp, transactionModel, snappResourcesClient);
+		lobbyAgentTransactionMasterVO.setAgentTransactionTypeCode(getTransactionType(addSSR, modifySSR));
+
+		// AGT_TRANS_PNR
+		if (CommonUtils.isValidString(pnrModel.getRecordLocator()) && !pnrModel.getCustomers().isEmpty()
+				&& !pnrModel.getTrips().isEmpty() && CommonUtils.isValidString(bookingDate)) {
+			lobbyPnrVO = metricsUtil.constructLobbyPnrVO(beginTimestamp, pnrModel.getRecordLocator(), bookingDate,
+					pnrModel.getCustomers().size(), pnrModel.getTrips().size(), workstationId);
+			lobbyPnrVO = metricsUtil.getSkyPriorityIndicator(endPNRResponseType, lobbyPnrVO);
+		}
+
+		// AGT_TRANS_PNR_CUST
+		if (endPNRResponseType.getPnr().getPassenger() != null) {
+			String customerId = metricsUtil.getCustomerId(endPNRResponseType.getPnr().getPassenger(), firstNameNumber,
+					lastNameNumber);
+			LobbyPnrCustTransactionVO lobbyPnrCustTransactionVO = metricsUtil.constructLobbyPnrCustTransactionVO(
+					beginTimestamp, customerId, firstNameNumber, lastNameNumber, workstationId);
+
+			// AGT_TRANS_PNR_CUST_SSR
+			if (!CommonUtils.isAnyObjectNull(lobbyPnrCustTransactionVO)
+					&& CommonUtils.isValidString(lobbyPnrCustTransactionVO.getCustomerIdentifier())
+					&& CommonUtils.isValidString(bookingDate)
+					&& CommonUtils.isValidString(ssrRequest.getRecordLocator())) {
+				lobbyPnrCustomerSsrTransactionVO = metricsUtil.constructLobbyPnrCustomerSsrTransaction(beginTimestamp,
+						ssrRequestCode, workstationId, ssrRequestCode);
+				lobbyPnrCustomerSsrTransactionVO
+						.setCustomerIdentifier(lobbyPnrCustTransactionVO.getCustomerIdentifier());
+				lobbyPnrCustTransactionVO.setBookingCreationGMTDate(bookingDate);
+				lobbyPnrCustTransactionVO.setRecordLocatorIdentifier(ssrRequest.getRecordLocator());
+			}
+			lobbyPnrCustTransaction.add(lobbyPnrCustTransactionVO);
+			if (lobbyPnrVO != null) {
+				lobbyPnrVO.setPnrCustTransactionVOLst(lobbyPnrCustTransaction);
+			}
+
+			ArrayList<LobbyPnrCustomerSsrTransactionVO> lobbyPnrCustomerSsrTransactionVOS = new ArrayList<>();
+			lobbyPnrCustomerSsrTransactionVOS.add(lobbyPnrCustomerSsrTransactionVO);
+			lobbyPnrCustTransactionVO.setLobbyPnrCustomerSsrTransactionVO(lobbyPnrCustomerSsrTransactionVOS);
+			lobbyAgentTransactionMasterVO.setLobbyPnrsVO(lobbyPnrVO);
+			lobbyAgentTransactionMasterVO.setAgentTransactionStatusCode(PNRConstants.SUCCESS);
+		}
+
+		return lobbyAgentTransactionMasterVO;
+	}
+
+	private String getTransactionType(boolean addSSR, boolean modifySSR) {
+		String transactionType;
+		if (addSSR) {
+			transactionType = CommonConstants.ADD_SSR_TXN_TYPE;
+		} else if (modifySSR) {
+			transactionType = CommonConstants.MODIFY_SSR_TXN_TYPE;
+		} else {
+			transactionType = CommonConstants.DELETE_SSR_TXN_TYPE;
+		}
+		return transactionType;
+	}
+
+	private SsrResponseModel addOrDeleteSSR(Map<String, String> ssrMap, String ssrType, AddRequestTypeVO addRequestType)
+			throws SNAPPServiceException {
+
+		SsrResponseModel delSSRresponse = null;
+		if ((CommonUtils.isStringEqualsIgnoreCase(SSRConstants.CTUR_SSR_CODE, ssrType)
+				|| CommonUtils.isStringEqualsIgnoreCase(SSRConstants.CWTC_SSR_CODE, ssrType))
+				&& checkCWTCorCTURSSRpresent(ssrMap)) {
+			// Cuba Gates
+			// Del ssrs
+			delSSRresponse = delCubaSSR(ssrMap, ssrType, addRequestType);
+			if (checkTCCDSSRpresent(ssrMap)) {
+				delSSRresponse = delCubaSSR(ssrMap, ssrType, addRequestType);
+			} // cuba changes ends
+				// infant changes start
+		} else if ((CommonUtils.isStringEqualsIgnoreCase(SSRConstants.CTUI_SSR_CODE, ssrType)
+				|| CommonUtils.isStringEqualsIgnoreCase(SSRConstants.CWTI_SSR_CODE, ssrType))
+				&& checkCtuiCwtiSSRpresent(ssrMap)) {
+			// Del ssrs
+			delSSRresponse = delInfantSSR(ssrMap, ssrType, addRequestType);
+			if (checkTCDISSRpresent(ssrMap)) {
+				delSSRresponse = delInfantSSR(ssrMap, ssrType, addRequestType);
+			}
+		} else if (!ssrMap.containsKey(ssrType)) {
+			delSSRresponse = addandDeleteSSR(ssrMap, ssrType, addRequestType);
+
+		}
+		return delSSRresponse;
+	}
+
+	private SsrResponseModel addandDeleteSSR(Map<String, String> ssrMap, String ssrType,
+			AddRequestTypeVO addRequestType) throws SNAPPServiceException {
+		SsrResponseModel delSSRresponse = new SsrResponseModel();
+		AddSpecialServiceResponseType soaAddResponse = invokeSSRSOACall(addRequestType);
+		if (soaAddResponse != null) {
+			if (CommonUtils.isStringEqualsIgnoreCase(SSRConstants.CTUR_SSR_CODE, ssrType)
+					|| CommonUtils.isStringEqualsIgnoreCase(SSRConstants.CWTC_SSR_CODE, ssrType)) {
+				delSSRresponse = delCubaSSR(ssrMap, ssrType, addRequestType);
+			} else if (CommonUtils.isStringEqualsIgnoreCase(SSRConstants.CTUI_SSR_CODE, ssrType)
+					|| CommonUtils.isStringEqualsIgnoreCase(SSRConstants.CWTI_SSR_CODE, ssrType)) {
+				// Del ssrs
+				delSSRresponse = delInfantSSR(ssrMap, ssrType, addRequestType);
+			}
+		}
+		return delSSRresponse;
+	}
+
+	private static void infantCheck(SSRRequest ssrRequest, boolean infant) {
+		if (infant) {
+			String ssrType = ssrRequest.getRequestCode();
+			if (CommonUtils.isStringEqualsIgnoreCase(SSRConstants.CTUR_SSR_CODE, ssrType)) {
+				ssrRequest.setRequestCode(SSRConstants.CTUI_SSR_CODE);
+			} else if (CommonUtils.isStringEqualsIgnoreCase(SSRConstants.CWTC_SSR_CODE, ssrType)) {
+				ssrRequest.setRequestCode(SSRConstants.CWTI_SSR_CODE);
+			} else if (CommonUtils.isStringEqualsIgnoreCase(SSRConstants.TCCD_SSR_CODE, ssrType)) {
+				ssrRequest.setRequestCode(SSRConstants.TCDI_SSR_CODE);
+			} else if (CommonUtils.isStringEqualsIgnoreCase(SSRConstants.OFAP_SSR_CODE, ssrType)) {
+				ssrRequest.setRequestCode(SSRConstants.OFAI_SSR_CODE);
+			}
+			String freeFormText = ssrRequest.getFreeFormText();
+			ssrRequest.setFreeFormText("Infant " + freeFormText);
+		}
+	}
+
+	private String getFreeFormTextForTCCD() {
+		DateFormat dateFormat = new SimpleDateFormat(DateTimeConstants.SIMPLE_DATE_FORMAT);
+		String date = dateFormat.format(new Date());
+		Date localTime = null;
+		try {
+			localTime = dateFormat.parse(date);
+		} catch (ParseException exception) {
+			SnappLogger.logError(LogUtil.getLogExceptionDetails(transactionModel.getHeaderInfoModel(), exception));
+		}
+		String userID = transactionModel.getHeaderInfoModel().getUserId();
+		String depCity = transactionModel.getClientContextModel().getWorkstationLocation();
+		String boardTime = GatesUtil.getTimeInHHmmaaFormat(dateFormat.format(localTime));
+		DateFormat dateFormat1 = new SimpleDateFormat(DateTimeConstants.DATE_FORMAT_DDMMM);
+		String boardDate = dateFormat1.format(localTime);
+		boardDate = boardDate.toUpperCase();
+		if (boardTime.length() != NumberConstants.STRING_LEN_6) {
+			boardTime = "0" + boardTime;
+		}
+		return userID + "/" + depCity + "/" + boardTime + "/" + boardDate;
+	}
+
+	private SsrResponseModel handleDeleteInfantSSR(AddRequestTypeVO addSSRInfoRequestType,
+			Map<String, String> ssrMapParm, String delSSR) throws SNAPPServiceException {
+		Map<String, String> ssrMap = ssrMapParm;
+		SsrResponseModel deleteInfoResponseType = null;
+		DeleteResponseType soaDeleteResponse;
+		DelSSRInfoRequestV4Type deleteRequestType = new DelSSRInfoRequestV4Type();
+		List<SpecialServiceRequestInfoTypeVO> specialServiceRequestInfoTypeVO = new ArrayList<>();
+		SpecialServiceRequestInfoTypeVO specialServiceRequestInfoType;
+		specialServiceRequestInfoType = new SpecialServiceRequestInfoTypeVO();
+		specialServiceRequestInfoType
+				.setAirlineCode(addSSRInfoRequestType.getSpecialServiceRequestInfo().getAirlineCode());
+		String ssrNumber = ssrMap.get(delSSR);
+		specialServiceRequestInfoType.setRecordNumber(ssrNumber);
+		specialServiceRequestInfoType.setRequestCode(delSSR);
+		deleteRequestType.setRequestInfo(soaManager.getRequestTypeInfo(new RequestInfoTypeVO()));
+		specialServiceRequestInfoTypeVO.add(specialServiceRequestInfoType);
+		deleteRequestType.setSpecialServiceRequestInfo(specialServiceRequestInfoTypeVO);
+		soaDeleteResponse = deleteSSRV4Info(deleteRequestType);
+		if (soaDeleteResponse != null) {
+			ssrMap.remove(delSSR);
+			deleteInfoResponseType = new SsrResponseModel();
+			ssrMap = populateSSRMap(soaDeleteResponse.getPnr(),
+					addSSRInfoRequestType.getSpecialServiceRequestInfo().getNameNumberInfo());
+		}
+		if ((SSRConstants.CTUI_SSR_CODE.equalsIgnoreCase(delSSR) || SSRConstants.CWTI_SSR_CODE.equalsIgnoreCase(delSSR))
+				&& checkTCDISSRpresent(ssrMap)) {
+			ssrNumber = ssrMap.get(SSRConstants.TCDI_SSR_CODE);
+			specialServiceRequestInfoType.setRecordNumber(ssrNumber);
+			specialServiceRequestInfoType.setRequestCode(SSRConstants.TCDI_SSR_CODE);
+			if (soaDeleteResponse != null) {
+				deleteInfoResponseType = new SsrResponseModel();
+				ssrMap.remove(SSRConstants.TCDI_SSR_CODE);
+			}
+		}
+		return deleteInfoResponseType;
+	}
+
+	private boolean checkTCDISSRpresent(Map<String, String> ssrMap) {
+		boolean isPresent = false;
+		if (ssrMap.containsKey(SSRConstants.TCDI_SSR_CODE)) {
+			isPresent = true;
+		}
+		return isPresent;
+	}
+
+	private SsrResponseModel delInfantSSR(Map<String, String> ssrMap, String ssrType,
+			AddRequestTypeVO addSSRInfoRequestType) throws SNAPPServiceException {
+		String delSSR;
+		SsrResponseModel delSSRresponse = new SsrResponseModel();
+		if (CommonUtils.isStringEqualsIgnoreCase(SSRConstants.CTUI_SSR_CODE, ssrType)
+				&& ssrMap.containsKey(SSRConstants.CWTI_SSR_CODE)) {
+			delSSR = SSRConstants.CWTI_SSR_CODE;
+			delSSRresponse = handleDeleteInfantSSR(addSSRInfoRequestType, ssrMap, delSSR);
+		} else if (CommonUtils.isStringEqualsIgnoreCase(SSRConstants.CWTI_SSR_CODE, ssrType)
+				&& ssrMap.containsKey(SSRConstants.CTUI_SSR_CODE)) {
+			delSSR = SSRConstants.CTUI_SSR_CODE;
+			delSSRresponse = handleDeleteInfantSSR(addSSRInfoRequestType, ssrMap, delSSR);
+		}
+		return delSSRresponse;
+	}
+
+	private boolean checkTCCDSSRpresent(Map<String, String> ssrMap) {
+		boolean isPresent = false;
+		if (ssrMap.containsKey(SSRConstants.TCCD_SSR_CODE)) {
+			isPresent = true;
+		}
+
+		return isPresent;
+	}
+
+	private SsrResponseModel delCubaSSR(Map<String, String> ssrMap, String ssrType,
+			AddRequestTypeVO addSSRInfoRequestType) throws SNAPPServiceException {
+		String delSSR;
+		SsrResponseModel delSSRresponse = new SsrResponseModel();
+
+		if (CommonUtils.isStringEqualsIgnoreCase(SSRConstants.CTUR_SSR_CODE, ssrType)
+				&& ssrMap.containsKey(SSRConstants.CWTC_SSR_CODE)) {
+			delSSR = SSRConstants.CWTC_SSR_CODE;
+			delSSRresponse = handleDeleteSSR(addSSRInfoRequestType, ssrMap, delSSR);
+		} else if (CommonUtils.isStringEqualsIgnoreCase(SSRConstants.CWTC_SSR_CODE, ssrType)
+				&& ssrMap.containsKey(SSRConstants.CTUR_SSR_CODE)) {
+			delSSR = SSRConstants.CTUR_SSR_CODE;
+			delSSRresponse = handleDeleteSSR(addSSRInfoRequestType, ssrMap, delSSR);
+		}
+		return delSSRresponse;
+	}
+
+	private SsrResponseModel handleDeleteSSR(AddRequestTypeVO addSSRInfoRequestType, Map<String, String> ssrMapParam,
+			String delSSR) throws SNAPPServiceException {
+		Map<String, String> ssrMap = ssrMapParam;
+		SsrResponseModel ssrResponseModel = null;
+		DeleteResponseType soaDeleteResponse;
+		for (int i = 0; i < addSSRInfoRequestType.getSpecialServiceRequestInfo().getSegmentNumberInfo().size(); i++) {
+			DelSSRInfoRequestV4Type deleteRequestType = new DelSSRInfoRequestV4Type();
+			List<SpecialServiceRequestInfoTypeVO> specialServiceRequestInfoTypeVO = new ArrayList<>();
+			SpecialServiceRequestInfoTypeVO specialServiceRequestInfoType;
+			specialServiceRequestInfoType = new SpecialServiceRequestInfoTypeVO();
+			specialServiceRequestInfoType
+					.setAirlineCode(addSSRInfoRequestType.getSpecialServiceRequestInfo().getAirlineCode());
+			String ssrNumber = ssrMap.get(delSSR);
+			if (CommonUtils.isValidString(ssrNumber)) {
+				specialServiceRequestInfoType.setRecordNumber(ssrNumber);
+				specialServiceRequestInfoType.setRequestCode(delSSR);
+				deleteRequestType.setRequestInfo(soaManager.getRequestTypeInfo(new RequestInfoTypeVO()));
+				specialServiceRequestInfoTypeVO.add(specialServiceRequestInfoType);
+				deleteRequestType.setSpecialServiceRequestInfo(specialServiceRequestInfoTypeVO);
+				soaDeleteResponse = deleteSSRV4Info(deleteRequestType);
+				if (soaDeleteResponse != null) {
+					ssrMap.remove(delSSR);
+					ssrResponseModel = new SsrResponseModel();
+					ssrMap = populateSSRMap(soaDeleteResponse.getPnr(),
+							addSSRInfoRequestType.getSpecialServiceRequestInfo().getNameNumberInfo());
+				}
+			}
+			if ((SSRConstants.CTUR_SSR_CODE.equalsIgnoreCase(delSSR)
+					|| SSRConstants.CWTC_SSR_CODE.equalsIgnoreCase(delSSR)) && checkTCCDSSRpresent(ssrMap)) {
+				ssrNumber = ssrMap.get(SSRConstants.TCCD_SSR_CODE);
+				specialServiceRequestInfoType.setRecordNumber(ssrNumber);
+				specialServiceRequestInfoType.setRequestCode(SSRConstants.TCCD_SSR_CODE);
+				soaDeleteResponse = deleteSSRV4Info(deleteRequestType);
+				if (soaDeleteResponse != null) {
+					ssrMap.remove(SSRConstants.TCCD_SSR_CODE);
+					ssrResponseModel = new SsrResponseModel();
+				}
+			}
+		}
+		return ssrResponseModel;
+	}
+
+	private DeleteResponseType deleteSSRV4Info(DelSSRInfoRequestV4Type delSSRInfoRequestType)
+			throws SNAPPServiceException {
+		DeleteResponseType soaDeleteResponse = null;
+		delSSRInfoRequestType.setRequestInfo(soaManager.getRequestTypeInfo(new RequestInfoTypeVO()));
+		if (delSSRInfoRequestType.getSpecialServiceRequestInfo() != null) {
+			soaDeleteResponse = invokeDeleteSSRSOACall(delSSRInfoRequestType);
+		}
+		return soaDeleteResponse;
+	}
+
+	// Check CTUR and CWTC are present
+	private boolean checkCWTCorCTURSSRpresent(Map<String, String> ssrMap) {
+		boolean isPresent = false;
+		if (ssrMap.containsKey(SSRConstants.CWTC_SSR_CODE) && ssrMap.containsKey(SSRConstants.CTUR_SSR_CODE)) {
+			isPresent = true;
+		}
+		return isPresent;
+	}
+
+	private boolean checkCtuiCwtiSSRpresent(Map<String, String> ssrMap) {
+		boolean isPresent = false;
+		if (ssrMap.containsKey(SSRConstants.CWTI_SSR_CODE) && ssrMap.containsKey(SSRConstants.CTUI_SSR_CODE)) {
+			isPresent = true;
+		}
+		return isPresent;
+	}
+
+	private boolean isInfant(CustomerNameNumber customerNameNumber, PNRModel pnrModel) {
+		boolean isInfant = false;
+		com.delta.acs.snapp.api.ssr.model.PNRModel localModel = transformToLocalPNRModel(pnrModel);
+		for (CustomerModel customerModel : localModel.getCustomers()) {
+			if (CommonUtils.isStringEqualsIgnoreCase(customerModel.getInfantIndicator(), PNRConstants.YES)
+					&& customerModel.getCustomerNameNumber().getFirstNameNumber()
+							.equals(customerNameNumber.getFirstNameNumber())
+					&& customerModel.getCustomerNameNumber().getLastNameNumber()
+							.equals(customerNameNumber.getLastNameNumber())) {
+				isInfant = true;
+				customerNameNumber.setFirstNameNumber(customerModel.getAssociatedAdult().getFirstNameNumber());
+				customerNameNumber.setLastNameNumber(customerModel.getAssociatedAdult().getLastNameNumber());
+			}
+
+		}
+		return isInfant;
+	}
+
+	private Map<String, String> populateSSRMap(PnrTypeVO retrieveResponse, List<NameNumberInfoType> nameNumberInfo) {
+		Map<String, String> ssrMap = new HashMap<>();
+
+		int psgnListSize;
+		String psgnNameNum;
+		for (NameNumberInfoType customerInfoInput : nameNumberInfo) {
+			psgnListSize = retrieveResponse.getPassenger().size();
+			psgnNameNum = customerInfoInput.getFirstNameNumber().concat(customerInfoInput.getLastNameNumber());
+			for (SpecialServiceRequestVO ssrList : retrieveResponse.getSpecialServiceRequest()) {
+				ssrMap.putAll(populateSSRMap(psgnNameNum, psgnListSize, ssrList));
+			}
+		}
+		return ssrMap;
+	}
+
+	private Map<String, String> populateSSRMap(String psgnNameNum, int psgnListSize, SpecialServiceRequestVO ssrList) {
+		Map<String, String> ssrMap = new HashMap<>();
+		if (psgnListSize == 1) {
+			ssrMap.put(ssrList.getRequestCode(), ssrList.getSsrNumber());
+		} else {
+			String ssrNameNum = ssrList.getFirstNameNumber().concat(ssrList.getLastNameNumber());
+			if (psgnNameNum.equalsIgnoreCase(ssrNameNum)) {
+				ssrMap.put(ssrList.getRequestCode(), ssrList.getSsrNumber());
+			}
+		}
+		return ssrMap;
+	}
+
+	/**
+	 * Construct Add SSR basic request details, update the request based on
+	 * whether passenger name numbers or customer id present in the input, and
+	 * add additional SSRs based on presence of certain flags in the input.
+	 *
+	 * @param ssrRequestModel
+	 *            Add SSR request info.
+	 * @param pnrModel
+	 *            PNR details.
+	 * @param isModify
+	 *            Flag that indicates whether this is Add or Modify flow.
+	 * @throws SNAPPServiceException
+	 *             SNAPP exception.
+	 * @throws BadRequestException
+	 *             Exception when invalid request is sent.
+	 */
+	private void frameAndSoaCallForAddSSR(SSRRequest ssrRequestModel, PNRModel pnrModel, boolean isModify)
+			throws BadRequestException, SNAPPServiceException {
+
+		List<AddRequestTypeVO> addRequestTypeVOList;
+
+		List<CustomerNameNumber> customers = ssrRequestModel.getCustomerNameNumbers();
+		String customerId = ssrRequestModel.getCustomerId();
+
+		// Frame SSR requestfeginfe
+		addRequestTypeVOList = SOASSRRequestBuilder.frameAddSSRRequestList(ssrRequestModel,
+				ssrRequestModel.getRequestCode().toUpperCase(), pnrModel);
+		for (AddRequestTypeVO addRequestType : addRequestTypeVOList) {
+			addRequestType.setRequestInfo(soaManager.getRequestTypeInfo(new RequestInfoTypeVO()));
+			boolean isOSIRemarksRequired = false;
+
+			if (OSIREMARKSBASEDSSRS.contains(ssrRequestModel.getRequestCode())) {
+				isOSIRemarksRequired = true;
+			}
+
+			if (customers != null && !customers.isEmpty()) {
+				// Update SSR request when Passenger Name Number present in the
+				// request
+				invokeAddSSRForPassengerNameNumbers(ssrRequestModel, addRequestType, isOSIRemarksRequired);
+			} else if (customerId != null && !customerId.isEmpty()) {
+				// Update SSR request when Customer Id present in the request
+				invokeAddSSRForCustomerId(transformToLocalPNRModel(pnrModel).getCustomers(),
+						ssrRequestModel.getRequestCode(), addRequestType,
+						formatCustomerId(ssrRequestModel.getCustomerId()), isOSIRemarksRequired);
+			}
+		}
+		// If assistanceRequired flag is true, add MAAS SSR in addition to
+		// whatever SSR the request was made for.
+		if (!isModify && ssrRequestModel.getAssistanceRequired()) {
+			addMeetAssist(ssrRequestModel, pnrModel);
+		}
+
+		// Handle Add/Modify flow for service animal SSR as part of Blind/Deaf
+		if (SERVICEANIMALBASEDSSRS.contains(ssrRequestModel.getRequestCode())) {
+			handleServiceAnimalSSR(addRequestTypeVOList, ssrRequestModel, pnrModel);
+		}
+	}
+
+	private void handleServiceAnimalSSR(List<AddRequestTypeVO> addRequestTypeVOList, SSRRequest ssrRequestModel,
+			PNRModel pnrModel) {
+		// Get mapping of SVAN SSRs per customer per segment.
+		List<String> existingSVANKey = verifySVANIsPresent(pnrModel.getSpecialServiceRequests());
+		if (ssrRequestModel.getServiceAnimalRequired()) {
+			// Add SVAN
+			handleSVANAddFlow(addRequestTypeVOList, ssrRequestModel, pnrModel, existingSVANKey);
+		}
+	}
+
+	private void handleSVANAddFlow(List<AddRequestTypeVO> addRequestTypeVOList, SSRRequest ssrRequestModel,
+			PNRModel pnrModel, List<String> existingSVANKey) {
+
+		// Update Customer Name number based on customer ID
+		identifyAndUpdateNameNumberById(ssrRequestModel, pnrModel);
+		if (CommonUtils.isValidList(ssrRequestModel.getCustomerNameNumbers())) {
+
+			ssrRequestModel.getCustomerNameNumbers()
+					.forEach(customerNameNumber -> addRequestTypeVOList.forEach(addRequest -> {
+						if (!existingSVANKey.contains(frameCustSegKey(addRequest, customerNameNumber))) {
+							addRequest.getSpecialServiceRequestInfo()
+									.setNameNumberInfo(frameCustomer(customerNameNumber));
+							try {
+								addRequest.setRequestInfo(soaManager.getRequestTypeInfo(new RequestInfoTypeVO()));
+								addRequest.getSpecialServiceRequestInfo()
+										.setRequestCode(SSRConstants.SERVICE_ANIMAL_SSR_CODE);
+								addRequest.getSpecialServiceRequestInfo().setFreeformText(appendOtherAsFreeFormText(
+										addRequest.getSpecialServiceRequestInfo().getFreeformText()));
+								invokeSSRSOACall(addRequest);
+							} catch (SNAPPServiceException exception) {
+								SnappLogger.logError(LogUtil
+										.getLogExceptionDetails(transactionModel.getHeaderInfoModel(), exception));
+							}
+						}
+					}));
+		}
+	}
+
+	private String frameCustSegKey(AddRequestTypeVO addRequest, CustomerNameNumber customerNameNumber) {
+		String key = null;
+		if (addRequest.getSpecialServiceRequestInfo() != null
+				&& CommonUtils.isValidList(addRequest.getSpecialServiceRequestInfo().getSegmentNumberInfo())
+				&& addRequest.getSpecialServiceRequestInfo().getSegmentNumberInfo().get(0) != null) {
+			key = addRequest.getSpecialServiceRequestInfo().getSegmentNumberInfo().get(0).getSegmentNumber()
+					+ CommonConstants.UNDERSCORE + frameCustomerNameNumber(customerNameNumber);
+		}
+		return key;
+	}
+
+	private void identifyAndUpdateNameNumberById(SSRRequest ssrRequestModel, PNRModel pnrModel) {
+		com.delta.acs.snapp.api.ssr.model.PNRModel theLocalPNRModel = transformToLocalPNRModel(pnrModel);
+		if (CommonUtils.isValidString(ssrRequestModel.getCustomerId())
+				&& CommonUtils.isValidList(pnrModel.getCustomers())
+				&& !CommonUtils.isValidList(ssrRequestModel.getCustomerNameNumbers())) {
+
+			List<CustomerNameNumber> theRequestedCustomers = theLocalPNRModel.getCustomers().stream()
+					.filter(customer -> ssrRequestModel.getCustomerId().equals(customer.getCustomerID()))
+					.map(CustomerModel::getCustomerNameNumber).collect(Collectors.toList());
+
+			ssrRequestModel.setCustomerNameNumbers(theRequestedCustomers);
+		}
+	}
+
+	private List<String> verifySVANIsPresent(List<SSRModel> theSSRs) {
+
+		List<String> theSVANSSRKey = new ArrayList<>();
+		if (CommonUtils.isValidList(theSSRs)) {
+			theSSRs.stream().filter(theSSR -> SVAN.equalsIgnoreCase(theSSR.getSsrName()))
+					.forEach(theSSR -> theSVANSSRKey.add(frameCustSegKey(theSSR)));
+		}
+		return theSVANSSRKey;
+	}
+
+	private String frameCustSegKey(SSRModel theSSR) {
+		String key = null;
+		if (theSSR != null && theSSR.getSegment() != null && theSSR.getCustomer() != null
+				&& theSSR.getCustomer().getCustomerNameNumber() != null) {
+			key = theSSR.getSegment().getSegmentNumber() + CommonConstants.UNDERSCORE
+					+ frameCustomerNameNumber(theSSR.getCustomer().getCustomerNameNumber());
+		}
+		return key;
+	}
+
+	private String frameCustomerNameNumber(
+			com.delta.acs.snapp.api.model.ui.response.pnr.CustomerNameNumber theNameNumber) {
+		return theNameNumber.getLastNameNumber() + CommonConstants.DOT + theNameNumber.getFirstNameNumber();
+	}
+
+	private String frameCustomerNameNumber(CustomerNameNumber theNameNumber) {
+		return theNameNumber.getLastNameNumber() + CommonConstants.DOT + theNameNumber.getFirstNameNumber();
+	}
+
+	/**
+	 * Add Meet and Assist (MAAS) SSR.
+	 *
+	 * @param ssrRequestModel
+	 *            Add SSR request info.
+	 * @param pnrModel
+	 *            PNR details.
+	 * @throws SNAPPServiceException
+	 *             SNAPP exception.
+	 * @throws BadRequestException
+	 *             Exception when invalid request is sent.
+	 */
+	private void addMeetAssist(SSRRequest ssrRequestModel, PNRModel pnrModel)
+			throws BadRequestException, SNAPPServiceException {
+		AddRequestTypeVO addRequestTypeVo;
+		addRequestTypeVo = SOASSRRequestBuilder.frameAddSSRRequest(ssrRequestModel, SSRConstants.MEET_AND_ASSISTANCE,
+				pnrModel);
+		addRequestTypeVo.setRequestInfo(soaManager.getRequestTypeInfo(new RequestInfoTypeVO()));
+		for (CustomerNameNumber customerNameNumber : ssrRequestModel.getCustomerNameNumbers()) {
+			if (!SOASSRRequestBuilder.checkSsrPresent(pnrModel, SSRConstants.MEET_AND_ASSISTANCE, customerNameNumber)) {
+				addRequestTypeVo.getSpecialServiceRequestInfo().setNameNumberInfo(frameCustomer(customerNameNumber));
+				invokeSSRSOACall(addRequestTypeVo);
+			}
+		}
+	}
+
+	/**
+	 * Prefix the customer id with three zeros if the customer id is 10
+	 * characters in length indicating that it is a frequent flyer id.
+	 * 
+	 * @param customerId
+	 *            10 digit or 13 digit customer id
+	 * @return Formatted customer id
+	 */
+	private String formatCustomerId(String customerId) {
+		return customerId.length() == 10 ? ("000" + customerId) : customerId;
+	}
+
+	/**
+	 * If passenger name number is passed in the API request then the Add SSR
+	 * request is constructed by directly sourcing the name number from the
+	 * ssrRequestModel.
+	 * 
+	 * @param customers
+	 *            List of passenger name numbers.
+	 * @param addRequestType
+	 *            Add SSR request type object
+	 * @throws SNAPPServiceException
+	 *             SNAPP exception.
+	 */
+	private void invokeAddSSRForPassengerNameNumbers(SSRRequest ssrRequestModel, AddRequestTypeVO addRequestType,
+			boolean isRequestCode) throws SNAPPServiceException {
+		List<CustomerNameNumber> customers = ssrRequestModel.getCustomerNameNumbers();
+		for (CustomerNameNumber customerNameNumber : customers) {
+			addRequestType.getSpecialServiceRequestInfo().setNameNumberInfo(frameCustomer(customerNameNumber));
+			invokeSSRSOACall(addRequestType);
+			if (isRequestCode) {
+				addOSIRemark(customerNameNumber.getFirstNameNumber() + "." + customerNameNumber.getLastNameNumber(),
+						ssrRequestModel.getRequestCode());
+			}
+		}
+	}
+
+	/**
+	 * If Customer Id is passed in the API request then the Add SSR request is
+	 * constructed by first getting the corresponding passenger name number for
+	 * the given Customer Id, then constructing the Ad SSR request by including
+	 * that passenger name number in its request.
+	 *
+	 * @param pnrModelCustomers
+	 *            List of customers in the PNRModel.
+	 * @param addRequestType
+	 *            Add SSR request type object.
+	 * @param customerId
+	 *            Customer Id.
+	 * @throws SNAPPServiceException
+	 *             SNAPP exception.
+	 */
+	private void invokeAddSSRForCustomerId(List<CustomerModel> pnrModelCustomers, String requestCode,
+			AddRequestTypeVO addRequestType, String customerId, boolean isRequestCode)
+			throws SNAPPServiceException, BadRequestException {
+		boolean isCustomerIdValid = false;
+		for (CustomerModel customerModel : pnrModelCustomers) {
+			if (customerId.equalsIgnoreCase(customerModel.getCustomerID())) {
+				isCustomerIdValid = true;
+				addRequestType.getSpecialServiceRequestInfo()
+						.setNameNumberInfo(frameCustomer(customerModel.getCustomerNameNumber()));
+				invokeSSRSOACall(addRequestType);
+				if (isRequestCode) {
+					addOSIRemark(customerModel.getCustomerNameNumber().getFirstNameNumber() + "."
+							+ customerModel.getCustomerNameNumber().getLastNameNumber(), requestCode);
+				}
+			}
+		}
+		if (!isCustomerIdValid) {
+			throw new BadRequestException(null, INVALID_CUSTOMERID_ERROR_MSG, null);
+		}
+	}
+
+	/**
+	 * This method adds a OSI remark in the PNR.
+	 * 
+	 * @param paxNameNum
+	 *            Passenger Name Number.
+	 */
+	private void addOSIRemark(String paxNameNum, String requestCode) {
+		RequestInfoTypeVO requestInfoTypeVO = soaManager.getRequestTypeInfo(new RequestInfoTypeVO());
+		AddOSIRemarkRequestType addOSIRemarkRequest = new AddOSIRemarkRequestType();
+		RemarkInfoVO remarkInfoVO = new RemarkInfoVO();
+		remarkInfoVO.setAirlineCode(CommonUtils.getProperty(CommonEnum.AIRLINE));
+		remarkInfoVO.setFreeformText(buildOsiRemarks(paxNameNum, requestCode));
+		addOSIRemarkRequest.setRemarkInfo(remarkInfoVO);
+		addOSIRemarkRequest.setRequestInfo(requestInfoTypeVO);
+		try {
+			A_RemarkService aRemarkService = InterfaceProvider.getRemarkInterface();
+			soaManager.invokeSOACall(aRemarkService, "addOSIRemark", addOSIRemarkRequest, new UserBean());
+		} catch (Exception exception) {
+			// Records a log message.
+			SnappLogger.logError(LogUtil.getLogExceptionDetails(transactionModel.getHeaderInfoModel(), exception));
+		}
+	}
+
+	/**
+	 * Constructs the free form text field required for adding the OSI remarks
+	 * that are required to be added afetr successful addition of an ESAN SSR.
+	 * Builds the freeform text in the "SNAPP/30APR/ATL/381512/01.01/ESAN
+	 * VERIFIED" format.
+	 *
+	 * @param paxNameNum
+	 *            Name Number in 01.01 format of the customer for whom the SSR
+	 *            is being added.
+	 * @return Freeform text for the OSI remarks.
+	 */
+	private String buildOsiRemarks(String paxNameNum, String requestCode) {
+		String osiRemarksText;
+		DateFormat format = new SimpleDateFormat(DateTimeConstants.DATE_FORMAT_DDMMM);
+		String date = format.format(new Date()).toUpperCase();
+		osiRemarksText = "SNAPP/" + date + "/" + transactionModel.getClientContextModel().getWorkstationLocation() + "/"
+				+ transactionModel.getHeaderInfoModel().getUserId() + "/" + paxNameNum + "/" + requestCode.toUpperCase()
+				+ VERIFIED;
+
+		return osiRemarksText;
+	}
+
+	private String appendOtherAsFreeFormText(String segmentLevelComment) {
+		String freeformText = SVAN_OTHER + SSR_DELIMITER;
+		return segmentLevelComment != null ? freeformText + segmentLevelComment : freeformText;
+	}
+
+}
